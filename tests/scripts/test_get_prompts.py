@@ -3,7 +3,6 @@
 import json
 import runpy
 import sys
-from functools import partial
 
 import pytest
 import yaml
@@ -41,11 +40,15 @@ def local_tasks(tmp_path, monkeypatch):
     }
     (task_dir / "task.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
     # Keep real task discovery/loading, without scanning unrelated built-in tasks.
-    monkeypatch.setattr(
-        get_prompts,
-        "TaskManager",
-        partial(TaskManager, include_defaults=False),
-    )
+    # Patch the class itself: the runpy entrypoint test re-executes the module, so
+    # patching the name imported into `get_prompts` would not take effect there.
+    real_init = TaskManager.__init__
+
+    def init_without_defaults(self, *args, **kwargs):
+        kwargs["include_defaults"] = False
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(TaskManager, "__init__", init_without_defaults)
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("HF_DATASETS_OFFLINE", "1")
     return task_dir
