@@ -1,7 +1,8 @@
 """Offline tests for the SGLang generate API backend.
 
-Covers payload assembly (`_create_payload`) and generation response parsing
-(`parse_generations`) of `lm_eval.models.sglang_generate_API.SGLANGGENERATEAPI`
+Covers payload assembly (`_create_payload`), generation response parsing
+(`parse_generations`) and loglikelihood response parsing (`parse_logprobs`)
+of `lm_eval.models.sglang_generate_API.SGLANGGENERATEAPI`
 without a running SGLang server or GPU, as requested in #1613.
 """
 
@@ -95,3 +96,79 @@ class TestParseGenerations:
     def test_list_preserves_order_and_whitespace(self):
         outputs = [{"text": " a "}, {"text": "b"}]
         assert SGLANGGENERATEAPI.parse_generations(outputs) == [" a ", "b"]
+
+
+class TestParseLogprobs:
+    """Loglikelihood response parsing (`parse_logprobs`)."""
+
+    @staticmethod
+    def _output(token_logprobs, top_logprobs):
+        return {
+            "meta_info": {
+                "input_token_logprobs": token_logprobs,
+                "input_top_logprobs": top_logprobs,
+            }
+        }
+
+    def test_sums_logprobs_after_context(self):
+        output = self._output(
+            [
+                [0.0, 11, "a"],
+                [-0.5, 12, "b"],
+                [-1.5, 13, "c"],
+                [-2.0, 14, "d"],
+            ],
+            [
+                [[0.0, 11, "a"]],
+                [[-0.4, 12, "b"]],
+                [[-1.4, 13, "c"]],
+                [[-1.9, 14, "d"]],
+            ],
+        )
+
+        results = SGLANGGENERATEAPI.parse_logprobs(output, ctxlens=[2])
+
+        assert [logprob for logprob, _ in results] == [pytest.approx(-3.5)]
+
+    def test_single_dict_is_wrapped_in_list(self):
+        output = self._output(
+            [[0.0, 11, "a"], [-1.0, 12, "b"]],
+            [[[0.0, 11, "a"]], [[-0.9, 12, "b"]]],
+        )
+
+        results = SGLANGGENERATEAPI.parse_logprobs(output, ctxlens=[1])
+
+        assert len(results) == 1
+
+    def test_multiple_outputs_pair_with_ctxlens(self):
+        short = self._output(
+            [[0.0, 11, "a"], [-1.0, 12, "b"]],
+            [[[0.0, 11, "a"]], [[-0.9, 12, "b"]]],
+        )
+        long = self._output(
+            [
+                [0.0, 11, "a"],
+                [-1.0, 12, "b"],
+                [-2.0, 13, "c"],
+                [-3.0, 14, "d"],
+            ],
+            [
+                [[0.0, 11, "a"]],
+                [[-0.9, 12, "b"]],
+                [[-1.9, 13, "c"]],
+                [[-2.9, 14, "d"]],
+            ],
+        )
+
+        results = SGLANGGENERATEAPI.parse_logprobs([short, long], ctxlens=[1, 3])
+
+        assert [logprob for logprob, _ in results] == [
+            pytest.approx(-1.0),
+            pytest.approx(-3.0),
+        ]
+
+    def test_rejects_non_positive_ctxlen(self):
+        output = self._output([[0.0, 11, "a"]], [[[0.0, 11, "a"]]])
+
+        with pytest.raises(AssertionError):
+            SGLANGGENERATEAPI.parse_logprobs(output, ctxlens=[0])
